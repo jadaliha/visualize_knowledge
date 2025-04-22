@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+numpy
+scikit-learn
+duckdb
+langchain-community
+tqdm
+langchain-core
+sentence-transformers
+jinja2
+langchain-text-splitters

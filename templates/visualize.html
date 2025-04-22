@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Embedding Visualization</title>
+    <style>
+        body, html { 
+            margin: 0; 
+            padding: 0; 
+            height: 100%; 
+            overflow: hidden;
+        }
+        #vis { 
+            width: 100vw; 
+            height: 100vh; 
+        }
+        #tooltip {
+            position: absolute;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            display: none;
+            pointer-events: none;
+            max-width: 200px;
+        }
+        #title {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        #legend {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.5);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+        }
+        #iframe-container {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 40%;
+            height: 100%;
+            background: white;
+            display: none;
+            z-index: 1000;
+        }
+        #source-iframe {
+            width: 100%;
+            height: calc(100% - 40px);
+            border: none;
+        }
+        #close-iframe {
+            position: absolute;
+            right: 10px;
+            top: 10px;
+            cursor: pointer;
+            background: #f44336;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div id="vis"></div>
+    <div id="tooltip"></div>
+    <div id="title">Embedding Visualization</div>
+    <div id="legend"></div>
+    <div id="iframe-container">
+        <button id="close-iframe">Close</button>
+        <iframe id="source-iframe"></iframe>
+    </div>
+    <script type="importmap">
+    {
+        "imports": {
+          "three": "https://unpkg.com/three@0.155.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.155.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        let scene, camera, renderer, points, raycaster, mouse;
+        const colorMap = {};
+        const tooltipElement = document.getElementById('tooltip');
+        const legendElement = document.getElementById('legend');
+        const iframeContainer = document.getElementById('iframe-container');
+        const sourceIframe = document.getElementById('source-iframe');
+        const closeIframeButton = document.getElementById('close-iframe');
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('vis').appendChild(renderer.domElement);
+
+            camera.position.z = 5;
+
+            // Create OrbitControls
+            const controls = new OrbitControls(camera, renderer.domElement);
+
+            raycaster = new THREE.Raycaster();
+            raycaster.params.Points.threshold = 0.1;
+            mouse = new THREE.Vector2();
+
+            // Set a dark background color
+            scene.background = new THREE.Color(0x111111);
+
+            // Add event listeners
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('resize', onWindowResize);
+
+            // Fetch data and create points
+            fetch('./data')
+                .then(response => response.json())
+                .then(data => {
+                    createPoints(data);
+                    animate();
+                });
+
+            // Modify the click event listener
+            renderer.domElement.addEventListener('click', onPointClick);
+
+            // Add close button event listener
+            closeIframeButton.addEventListener('click', closeIframe);
+        }
+
+        function createPoints(data) {
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+
+            data.forEach((point, index) => {
+                positions.push(point.x, point.y, point.z);
+                
+                if (!colorMap[point.source]) {
+                    colorMap[point.source] = new THREE.Color(Math.random(), Math.random(), Math.random());
+                }
+                const color = colorMap[point.source];
+                colors.push(color.r, color.g, color.b);
+            });
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            geometry.userData = data;
+            geometry.userData.originalColors = colors.slice(); // Store original colors
+
+            const material = new THREE.PointsMaterial({ 
+                size: 0.05, 
+                vertexColors: true, 
+                transparent: true, 
+                opacity: 1 
+            });
+            points = new THREE.Points(geometry, material);
+            scene.add(points);
+
+            // Update legend
+            updateLegend();
+        }
+
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            // Update tooltip position
+            tooltipElement.style.left = (event.clientX + 10) + 'px';
+            tooltipElement.style.top = (event.clientY + 10) + 'px';
+        }
+
+        function onPointClick(event) {
+            event.preventDefault();
+
+            // Only proceed if the Shift key is pressed
+            if (!event.shiftKey) return;
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(points);
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                const index = intersect.index;
+                const pointData = points.geometry.userData[index];
+                
+                fetchSourceAddress(pointData.id);
+            }
+        }
+
+        function fetchSourceAddress(id) {
+            fetch(`./source-address/${id}`)
+                .then(response => response.json())
+                .then(data => {
+                    sourceIframe.src = data.address;
+                    iframeContainer.style.display = 'block';
+                    if (points && points.geometry) {
+                        updatePointsOpacity(data.chunk_ids);
+                    }
+                })
+                .catch(error => console.error('Error fetching source address:', error));
+        }
+
+        function closeIframe() {
+            iframeContainer.style.display = 'none';
+            sourceIframe.src = '';
+            resetPointsOpacity();
+        }
+
+        function updatePointsOpacity(highlightedIds) {
+            if (!points || !points.geometry || !points.geometry.attributes.color) {
+                console.warn('Points not initialized yet');
+                return;
+            }
+
+            const colors = points.geometry.attributes.color;
+            const originalColors = points.geometry.userData.originalColors;
+
+            if (!originalColors) {
+                points.geometry.userData.originalColors = colors.array.slice();
+            }
+
+            for (let i = 0; i < colors.count; i++) {
+                const pointData = points.geometry.userData[i];
+                if (pointData && pointData.id) {
+                    const isHighlighted = highlightedIds.includes(pointData.id);
+                    const opacity = isHighlighted ? 1 : 0.01;
+
+                    colors.array[i * 3] = originalColors[i * 3] * opacity;
+                    colors.array[i * 3 + 1] = originalColors[i * 3 + 1] * opacity;
+                    colors.array[i * 3 + 2] = originalColors[i * 3 + 2] * opacity;
+                }
+            }
+
+            colors.needsUpdate = true;
+        }
+
+        function resetPointsOpacity() {
+            const colors = points.geometry.attributes.color;
+            const originalColors = points.geometry.userData.originalColors;
+
+            if (originalColors) {
+                colors.array.set(originalColors);
+                colors.needsUpdate = true;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Update the picking ray with the camera and mouse position
+            raycaster.setFromCamera(mouse, camera);
+
+            // Calculate objects intersecting the picking ray
+            const intersects = raycaster.intersectObject(points);
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                const index = intersect.index;
+                const pointData = points.geometry.userData[index];
+                
+                tooltipElement.style.display = 'block';
+                tooltipElement.innerHTML = `Text: ${pointData.text}<br>Source: ${pointData.source}`;
+            } else {
+                tooltipElement.style.display = 'none';
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function updateLegend() {
+            let legendHTML = '<h3>Legend</h3>';
+            for (const [source, color] of Object.entries(colorMap)) {
+                legendHTML += `<div><span style="color: rgb(${color.r*255},${color.g*255},${color.b*255});">●</span> ${source}</div>`;
+            }
+            legendElement.innerHTML = legendHTML;
+        }
+
+        init();
+    </script>
+</body>
+</html>
+                legendHTML += `<div><span style="color: rgb(${color.r*255},${color.g*255},${color.b*255});">●</span> ${source}</div>`;
+            }
+            legendElement.innerHTML = legendHTML;
+        }
+
+        init();
+    </script>
+</body>
+</html>
