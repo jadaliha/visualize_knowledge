@@ -35,6 +35,36 @@
             font-weight: bold;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
         }
+        #prompt-container {
+            position: absolute;
+            top: 70px;
+            left: 20px;
+            background: rgba(0,0,0,0.5);
+            padding: 15px;
+            border-radius: 5px;
+            width: 300px;
+        }
+        #prompt-form {
+            display: flex;
+            flex-direction: column;
+        }
+        #prompt-input {
+            padding: 8px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            border: none;
+        }
+        #prompt-submit {
+            padding: 8px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #prompt-submit:hover {
+            background: #45a049;
+        }
         #legend {
             position: absolute;
             bottom: 20px;
@@ -78,6 +108,12 @@
     <div id="vis"></div>
     <div id="tooltip"></div>
     <div id="title">Embedding Visualization</div>
+    <div id="prompt-container">
+        <form id="prompt-form">
+            <input type="text" id="prompt-input" placeholder="Enter your question about the blog posts...">
+            <button type="submit" id="prompt-submit">Submit</button>
+        </form>
+    </div>
     <div id="legend"></div>
     <div id="iframe-container">
         <button id="close-iframe">Close</button>
@@ -97,14 +133,18 @@
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
         let scene, camera, renderer, points, raycaster, mouse;
+        let promptPoint, promptSphere, promptAnimation;
         const colorMap = {};
         const tooltipElement = document.getElementById('tooltip');
         const legendElement = document.getElementById('legend');
         const iframeContainer = document.getElementById('iframe-container');
         const sourceIframe = document.getElementById('source-iframe');
         const closeIframeButton = document.getElementById('close-iframe');
+        const promptForm = document.getElementById('prompt-form');
 
         function init() {
+            // Set up the form submission handler
+            promptForm.addEventListener('submit', handlePromptSubmit);
             scene = new THREE.Scene();
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
             renderer = new THREE.WebGLRenderer();
@@ -289,7 +329,134 @@
                 tooltipElement.style.display = 'none';
             }
 
+            // Animate the prompt point if it exists
+            if (promptPoint) {
+                const time = Date.now() * 0.001; // Convert to seconds
+                // Make the point blink by changing its opacity
+                promptPoint.material.opacity = 0.5 + 0.5 * Math.sin(time * 5);
+            }
+
             renderer.render(scene, camera);
+        }
+
+        // Handle prompt form submission
+        async function handlePromptSubmit(event) {
+            event.preventDefault();
+            
+            const promptInput = document.getElementById('prompt-input');
+            const prompt = promptInput.value.trim();
+            
+            if (!prompt) return;
+            
+            // Disable the form while processing
+            const submitButton = document.getElementById('prompt-submit');
+            submitButton.disabled = true;
+            submitButton.textContent = 'Processing...';
+            
+            try {
+                // Create form data for the request
+                const formData = new FormData();
+                formData.append('prompt', prompt);
+                
+                // Send the prompt to the server
+                const response = await fetch('/prompt', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to process prompt');
+                }
+                
+                const data = await response.json();
+                
+                // Visualize the prompt and relevant chunks
+                visualizePrompt(data);
+                
+                // Re-enable the form
+                submitButton.disabled = false;
+                submitButton.textContent = 'Submit';
+            } catch (error) {
+                console.error('Error processing prompt:', error);
+                alert('Error processing prompt. Please try again.');
+                
+                // Re-enable the form
+                submitButton.disabled = false;
+                submitButton.textContent = 'Submit';
+            }
+        }
+        
+        // Visualize the prompt and relevant chunks
+        function visualizePrompt(data) {
+            // Remove previous prompt visualization if it exists
+            if (promptPoint) scene.remove(promptPoint);
+            if (promptSphere) scene.remove(promptSphere);
+            
+            // Create a material for the prompt point
+            const promptMaterial = new THREE.PointsMaterial({
+                size: 0.1,
+                color: 0xffff00, // Yellow color for the prompt
+                transparent: true,
+                opacity: 1
+            });
+            
+            // Create a geometry for the prompt point
+            const promptGeometry = new THREE.BufferGeometry();
+            promptGeometry.setAttribute('position', new THREE.Float32BufferAttribute([
+                data.prompt.x, data.prompt.y, data.prompt.z
+            ], 3));
+            
+            // Create the prompt point
+            promptPoint = new THREE.Points(promptGeometry, promptMaterial);
+            scene.add(promptPoint);
+            
+            // Create a sphere to represent the relevance radius
+            const sphereGeometry = new THREE.SphereGeometry(data.relevance_radius, 32, 32);
+            const sphereMaterial = new THREE.MeshBasicMaterial({
+                color: 0xffff00,
+                transparent: true,
+                opacity: 0.1,
+                wireframe: true
+            });
+            
+            promptSphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+            promptSphere.position.set(data.prompt.x, data.prompt.y, data.prompt.z);
+            scene.add(promptSphere);
+            
+            // Highlight the relevant chunks
+            highlightRelevantChunks(data.relevant_chunks);
+        }
+        
+        // Highlight the relevant chunks
+        function highlightRelevantChunks(relevantIds) {
+            if (!points || !points.geometry || !points.geometry.attributes.color) {
+                console.warn('Points not initialized yet');
+                return;
+            }
+            
+            const colors = points.geometry.attributes.color;
+            const originalColors = points.geometry.userData.originalColors;
+            
+            if (!originalColors) {
+                points.geometry.userData.originalColors = colors.array.slice();
+            }
+            
+            // Reset all points to their original colors with reduced opacity
+            for (let i = 0; i < colors.count; i++) {
+                const pointData = points.geometry.userData[i];
+                
+                // Determine if this point is relevant
+                const isRelevant = relevantIds.includes(pointData.id);
+                
+                // Set opacity based on relevance
+                const opacity = isRelevant ? 1.0 : 0.2;
+                
+                colors.array[i * 3] = originalColors[i * 3] * opacity;
+                colors.array[i * 3 + 1] = originalColors[i * 3 + 1] * opacity;
+                colors.array[i * 3 + 2] = originalColors[i * 3 + 2] * opacity;
+            }
+            
+            colors.needsUpdate = true;
         }
 
         function updateLegend() {

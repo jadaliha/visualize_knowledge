@@ -1,6 +1,7 @@
 import uvicorn
 import json
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import JSONResponse
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -144,7 +145,8 @@ def consume(urls: set[str], vectorstore: DuckStore, browser=AsyncChromiumLoader)
 
 pca = PCA(n_components=3)
 app = FastAPI()
-app.add_middleware(HTTPSRedirectMiddleware)
+# Removing HTTPS redirect for local development
+# app.add_middleware(HTTPSRedirectMiddleware)
 
 # Fetch data from DuckDB
 data = vectorstore._table.select('id', 'text', 'embedding', 'metadata').to_df()
@@ -210,6 +212,45 @@ async def visualize(request: Request):
 async def get_data():
     return data
 
+@app.post("/prompt")
+async def process_prompt(prompt: str = Form()):
+    # Embed the prompt using the same model
+    prompt_embedding = embeddings.embed_query(prompt)
+    
+    # Convert to numpy array for PCA transformation
+    prompt_embedding_array = np.array([prompt_embedding])
+    
+    # Transform the prompt embedding using the same PCA model
+    # that was used for the original data
+    prompt_reduced = pca.transform(prompt_embedding_array)[0]
+    
+    # Calculate distances to find relevant chunks
+    distances = []
+    for i, point in enumerate(data):
+        # Calculate Euclidean distance between prompt and each point
+        point_coords = np.array([point['x'], point['y'], point['z']])
+        prompt_coords = np.array([prompt_reduced[0], prompt_reduced[1], prompt_reduced[2]])
+        distance = np.linalg.norm(point_coords - prompt_coords)
+        distances.append((i, distance))
+    
+    # Sort by distance and get the closest points (most relevant)
+    distances.sort(key=lambda x: x[1])
+    relevant_indices = [d[0] for d in distances[:10]]  # Get top 10 relevant chunks
+    
+    # Prepare response with prompt position and relevant chunks
+    response = {
+        'prompt': {
+            'text': prompt,
+            'x': float(prompt_reduced[0]),
+            'y': float(prompt_reduced[1]),
+            'z': float(prompt_reduced[2])
+        },
+        'relevant_chunks': [data[i]['id'] for i in relevant_indices],
+        'relevance_radius': float(distances[9][1]) if len(distances) >= 10 else 1.0  # Use distance to 10th point as radius
+    }
+    
+    return JSONResponse(content=response)
+
 if __name__ == "__main__":
     uvicorn.run(
         "app:app",
@@ -220,8 +261,3 @@ if __name__ == "__main__":
 # use tensorboard to visualize the embeddings
 # https://www.tensorflow.org/tensorboard/tensorboard_projector_plugin
 # tensorboard --logdir logs
-
-
-
-
-
