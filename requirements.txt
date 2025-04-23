@@ -9,3 +9,4 @@ langchain-core
 sentence-transformers
 jinja2
 langchain-text-splitters
+python-multipart
